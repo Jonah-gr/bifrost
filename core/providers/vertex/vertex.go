@@ -86,9 +86,10 @@ const (
 // different source types, so the same URL is forwarded for one and downloaded for the
 // other.
 //
-// http(s) -- always fetched, for both families. Vertex's FileData is documented as Cloud
-// Storage only ("fileUri: Required. The URI of the file in Google Cloud Storage" -- the v1
-// aiplatform discovery document), so an https URI has no supported form here. Forwarding
+// http(s) -- fetched, for both families, except YouTube video links (below). Vertex's
+// FileData is documented as Cloud Storage only ("fileUri: Required. The URI of the file in
+// Google Cloud Storage" -- the v1 aiplatform discovery document), so an arbitrary https URI
+// has no supported form here. Forwarding
 // one was measured against harness 47.10 and Vertex rejected all six endpoint shapes with
 // "Cannot fetch content from the provided URL ... Status:
 // URL_REJECTED-REJECTED_FC_TOO_MANY_PENDING" after ~59s each: the server-side crawler is
@@ -105,6 +106,13 @@ const (
 // base64-encoded sources are currently available". No URL form reaches Claude-on-Vertex, so
 // forwarding the URI would be a guaranteed 400.
 //
+// YouTube video links -- forwarded for Gemini/Gemma as fileData.fileUri. This is the one
+// https form Vertex documents for fileData: Gemini reads public YouTube videos itself
+// ("Video understanding" guide, "YouTube video URL" input), with no crawler involved.
+// Fetching one only downloads the watch page's HTML, which then reaches the model as the
+// "video". Claude-on-Vertex takes base64 only, so the Anthropic family keeps the fetch.
+// See isYouTubeVideoURL for the link forms that count.
+//
 // data: -- forwarded. The Gemini converter turns it into an inlineData blob, and the
 // Anthropic path already expects a data URI.
 //
@@ -119,6 +127,9 @@ func classifyURLSource(rawURL string, isAnthropicFamily bool) urlSourceDispositi
 	}
 	switch parsed.Scheme {
 	case "http", "https":
+		if !isAnthropicFamily && isYouTubeVideoURL(parsed) {
+			return urlSourceForward
+		}
 		return urlSourceFetchHTTP
 	case "data":
 		return urlSourceForward
@@ -130,6 +141,34 @@ func classifyURLSource(rawURL string, isAnthropicFamily bool) urlSourceDispositi
 	default:
 		return urlSourceForward
 	}
+}
+
+// youTubeHosts are the hosts a YouTube video link is served from; youtu.be is the
+// share-link short form.
+var youTubeHosts = map[string]bool{
+	"youtube.com":     true,
+	"www.youtube.com": true,
+	"m.youtube.com":   true,
+	"youtu.be":        true,
+}
+
+// isYouTubeVideoURL reports whether u links to a single YouTube video: a watch page with a
+// v= parameter, a youtu.be share link, or a Shorts link. Other YouTube pages (channels,
+// playlists, search) are ordinary web pages and stay on the fetch path.
+func isYouTubeVideoURL(u *url.URL) bool {
+	host := strings.ToLower(u.Hostname())
+	if !youTubeHosts[host] {
+		return false
+	}
+	path := strings.TrimSuffix(u.Path, "/")
+	if host == "youtu.be" {
+		return len(path) > 1 && !strings.Contains(path[1:], "/")
+	}
+	if path == "/watch" {
+		return u.Query().Get("v") != ""
+	}
+	id, ok := strings.CutPrefix(path, "/shorts/")
+	return ok && id != "" && !strings.Contains(id, "/")
 }
 
 // vertexCredentialIdentity returns the string that identifies which credentials a key authenticates
@@ -558,9 +597,9 @@ func (provider *VertexProvider) fetchGCSObjectEncoded(ctx *schemas.BifrostContex
 // cancellation/deadlines abort in-flight downloads.
 //
 // classifyURLSource holds the per-scheme, per-family rules and cites the provider docs
-// behind each one; the short version is that http(s) is always fetched, gs:// is forwarded
-// to Gemini and fetched for Claude, and object-store URIs other than gs:// are resolvable
-// by neither side.
+// behind each one; the short version is that http(s) is fetched (except YouTube video links,
+// which Gemini reads itself), gs:// is forwarded to Gemini and fetched for Claude, and
+// object-store URIs other than gs:// are resolvable by neither side.
 func (provider *VertexProvider) inlineRemoteURLSources(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) error {
 	if request == nil || request.Input == nil {
 		return nil

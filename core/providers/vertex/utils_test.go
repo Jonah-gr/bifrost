@@ -681,6 +681,18 @@ func TestClassifyURLSource(t *testing.T) {
 		{name: "gcs to claude is fetched from storage", url: "gs://bucket/clip.mp4", anthropic: true, want: urlSourceFetchGCS},
 		{name: "data uri to claude is forwarded", url: "data:image/png;base64,iVBORw0KGgo=", anthropic: true, want: urlSourceForward},
 
+		// YouTube video links are the one https form Gemini reads itself; Claude takes
+		// base64 only, and any other YouTube page is an ordinary web page.
+		{name: "youtube watch link to gemini is forwarded", url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=42s", want: urlSourceForward},
+		{name: "youtube mobile watch link to gemini is forwarded", url: "https://m.youtube.com/watch?v=dQw4w9WgXcQ", want: urlSourceForward},
+		{name: "youtu.be share link to gemini is forwarded", url: "https://youtu.be/dQw4w9WgXcQ?si=abc", want: urlSourceForward},
+		{name: "youtube shorts link to gemini is forwarded", url: "https://www.youtube.com/shorts/dQw4w9WgXcQ", want: urlSourceForward},
+		{name: "youtube watch link to claude is fetched", url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", anthropic: true, want: urlSourceFetchHTTP},
+		{name: "youtube watch page without video id is fetched", url: "https://www.youtube.com/watch", want: urlSourceFetchHTTP},
+		{name: "youtube channel page is fetched", url: "https://www.youtube.com/@GoogleDevelopers", want: urlSourceFetchHTTP},
+		{name: "youtube playlist page is fetched", url: "https://www.youtube.com/playlist?list=PL123", want: urlSourceFetchHTTP},
+		{name: "lookalike host is fetched", url: "https://youtube.com.example.com/watch?v=dQw4w9WgXcQ", want: urlSourceFetchHTTP},
+
 		// Schemes bifrost cannot fetch are still handed to the provider rather than
 		// rejected here: bifrost does not decide what the provider accepts, and the
 		// provider's own answer is the authoritative one.
@@ -704,14 +716,16 @@ func TestClassifyURLSource(t *testing.T) {
 // forwardedGeminiURLs are the URL forms a Gemini-family request must reach Vertex with
 // intact. gs:// is the load-bearing case: downloading it fails outright today (the
 // reported bug) and forwarding keeps large media out of the 25 MiB inline path.
-// https is deliberately absent -- Vertex rejects a forwarded https fileUri, measured
-// against harness 47.10, so it stays on the fetch path. See classifyURLSource.
+// Arbitrary https is deliberately absent -- Vertex rejects a forwarded https fileUri,
+// measured against harness 47.10, so it stays on the fetch path. YouTube video links are
+// the documented exception. See classifyURLSource.
 var forwardedGeminiURLs = []struct {
 	name string
 	url  string
 }{
 	{name: "gcs", url: "gs://my-bucket/video-eval/clip.mp4"},
 	{name: "data uri", url: "data:image/png;base64,iVBORw0KGgo="},
+	{name: "youtube video", url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
 }
 
 func TestInlineRemoteURLSourcesForwardsGeminiURLs(t *testing.T) {
